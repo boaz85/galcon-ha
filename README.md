@@ -176,11 +176,13 @@ Connects and dumps all services and characteristics, flagging any Galcon-specifi
 
 ### `galcon_test.py` — control the valve
 
+The device is found automatically — no address needed. It advertises every 4–8 seconds even when idle.
+
 ```bash
-python3 galcon_test.py <address> status   # read valve state and remaining time
-python3 galcon_test.py <address> on       # open valve
-python3 galcon_test.py <address> off      # close valve
-python3 galcon_test.py <address> services # list all GATT characteristics
+python3 galcon_test.py status   # read valve state and remaining time
+python3 galcon_test.py on       # open valve
+python3 galcon_test.py off      # close valve
+python3 galcon_test.py services # list all GATT characteristics
 ```
 
 ### `explore.py` — full protocol dump
