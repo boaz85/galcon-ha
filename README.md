@@ -205,11 +205,78 @@ Scans for the device, connects, reads every readable characteristic, and subscri
 
 ---
 
+## ESPHome Integration
+
+The `esphome/` directory contains a ready-to-flash ESPHome configuration that exposes the Galcon as native Home Assistant entities over WiFi — no BLE adapter on the HA server required.
+
+### Entities created
+
+| Entity | Type | Description |
+|---|---|---|
+| Galcon Irrigation | `valve` | Open / close the valve |
+| Galcon Irrigation Remaining | `sensor` | Remaining irrigation time (minutes) |
+| Galcon Irrigation Connected | `binary_sensor` | BLE connection status (diagnostic) |
+
+### Setup
+
+**1. Install ESPHome**
+```bash
+pip install esphome
+```
+
+**2. Create your secrets file**
+```bash
+cp esphome/secrets.yaml.template esphome/secrets.yaml
+# edit secrets.yaml with your WiFi credentials and HA API key
+```
+
+**3. Find the Galcon MAC address**
+
+macOS hides real BLE MAC addresses; the ESP32 sees the real one. Flash the firmware once *without* setting `galcon_mac` (comment out the `ble_client` block and the `!secret galcon_mac` line). Watch the serial log — when the Galcon advertises you will see:
+
+```
+[galcon] Found Galcon  MAC: AA:BB:CC:DD:EE:FF  name: Galcon
+```
+
+Copy that MAC into `esphome/secrets.yaml` as `galcon_mac`, then reflash.
+
+**4. Flash**
+```bash
+esphome run esphome/galcon.yaml
+```
+
+**5. Add to Home Assistant**
+
+The device will appear automatically in HA via the ESPHome integration (Settings → Devices & Services). It exposes a `valve` entity you can use directly in automations and the Irrigation dashboard.
+
+### How it works
+
+- The ESP32 runs a continuous BLE scan. When the Galcon advertisement is detected (every 4–8 seconds), it connects automatically.
+- On connection, it writes the AUTH characteristic (`\x01\x02`) once to unlock the session.
+- It subscribes to **STATUS notifications** for real-time push updates (remaining time countdown, valve state). It also polls every 30 seconds as a fallback.
+- Open/close commands write AUTH again followed by the CONTROL characteristic.
+- `auto_connect: true` ensures the ESP32 reconnects automatically if the BLE link drops.
+
+### Compatible ESP32 boards
+
+Any ESP32 with BLE works. Recommended options for outdoor/near-valve placement:
+
+| Board | Notes |
+|---|---|
+| M5Stack Atom Lite | Compact, easy to enclose |
+| Wemos D1 Mini32 | Cheap, breadboard-friendly |
+| ESP32-C3 SuperMini | Tiny, USB-C |
+| Generic `esp32dev` | Default in config — works with most boards |
+
+Change the `board:` key in `esphome/galcon.yaml` to match your hardware.
+
+---
+
 ## Roadmap
 
 - [x] BLE protocol reverse-engineered
 - [x] Python tools for scanning, probing, and control
-- [ ] ESPHome BLE client YAML configuration
+- [x] ESPHome BLE client YAML configuration
 - [ ] Home Assistant custom component (`custom_components/galcon`)
   - [ ] `valve` entity (open/close)
   - [ ] `sensor` for remaining time
