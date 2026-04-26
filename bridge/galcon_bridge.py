@@ -110,7 +110,7 @@ class GalconBridge:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._cmd_queue: asyncio.Queue[str] = asyncio.Queue()
 
-        self._mq = mqtt.Client(client_id="galcon-bridge")
+        self._mq = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="galcon-bridge")
         if config.get("mqtt_user"):
             self._mq.username_pw_set(config["mqtt_user"], config.get("mqtt_password", ""))
         self._mq.will_set(TOPIC_AVAIL, "offline", retain=True)
@@ -120,21 +120,20 @@ class GalconBridge:
 
     # ── MQTT callbacks ────────────────────────────────────────────────────────
 
-    def _on_mqtt_connect(self, client, userdata, flags, rc):
-        if rc != 0:
-            log.error("MQTT connect failed, rc=%d", rc)
+    def _on_mqtt_connect(self, client, userdata, flags, reason_code, properties):
+        if reason_code != 0:
+            log.error("MQTT connect failed, rc=%s", reason_code)
             return
         log.info("MQTT connected to %s:%d", self._cfg["mqtt_host"], self._cfg["mqtt_port"])
         client.publish("homeassistant/valve/galcon_irrigation/config",
                        json.dumps(DISCOVERY_VALVE), retain=True)
         client.publish("homeassistant/sensor/galcon_remaining/config",
                        json.dumps(DISCOVERY_SENSOR), retain=True)
-        client.publish(TOPIC_AVAIL, "offline", retain=True)
         client.subscribe(TOPIC_CMD)
         log.info("HA Discovery published, subscribed to %s", TOPIC_CMD)
 
-    def _on_mqtt_disconnect(self, client, userdata, rc):
-        log.warning("MQTT disconnected (rc=%d), will reconnect", rc)
+    def _on_mqtt_disconnect(self, client, userdata, flags, reason_code, properties):
+        log.warning("MQTT disconnected (rc=%s), will reconnect", reason_code)
 
     def _on_mqtt_message(self, client, userdata, msg):
         payload = msg.payload.decode().strip().upper()
@@ -196,60 +195,75 @@ class GalconBridge:
 
     # ── Main BLE loop ─────────────────────────────────────────────────────────
 
+    async def _ble_connect_and_work(self):
+        """Connect once, handle any queued commands, read state, disconnect."""
+        device = await self._find_galcon()
+        if not device:
+            return False
+
+        got_state = False
+        try:
+            async with BleakClient(device, timeout=30.0) as client:
+                log.info("Connected to Galcon")
+                await client.write_gatt_char(AUTH_UUID, bytes([0x01, 0x02]))
+
+                # Drain any queued commands first
+                while not self._cmd_queue.empty():
+                    cmd = self._cmd_queue.get_nowait()
+                    await self._send_command(client, cmd)
+
+                # Read and publish current state
+                result = await self._read_status(client)
+                if result:
+                    self._publish_state(*result)
+                    got_state = True
+
+        except (BleakError, BleakDeviceNotFoundError, OSError) as e:
+            if not got_state:
+                log.warning("BLE error: %s", e)
+                return False
+            log.debug("BLE disconnect error (state already read): %s", e)
+        except Exception as e:
+            if not got_state:
+                log.error("Unexpected BLE error: %s", e)
+                return False
+            log.debug("BLE disconnect error (state already read): %s", e)
+
+        log.info("Disconnected from Galcon")
+        return True
+
     async def _ble_loop(self):
-        poll = self._cfg.get("poll_interval", 30)
+        poll = self._cfg.get("poll_interval", 120)
+        consecutive_failures = 0
+
+        # Initial connect on startup
+        ok = await self._ble_connect_and_work()
+        if ok:
+            consecutive_failures = 0
+        else:
+            consecutive_failures += 1
+            if consecutive_failures >= 3:
+                self._set_offline()
 
         while self._running:
-            device = await self._find_galcon()
-            if not device:
-                continue
-
+            # Sleep until poll interval, but wake early if a command arrives
             try:
-                async with BleakClient(device, timeout=30.0) as client:
-                    log.info("Connected to Galcon")
+                cmd = await asyncio.wait_for(self._cmd_queue.get(), timeout=poll)
+                self._cmd_queue.put_nowait(cmd)  # put it back so _ble_connect_and_work drains it
+            except asyncio.TimeoutError:
+                pass  # regular poll
 
-                    # Authenticate once per connection
-                    await client.write_gatt_char(AUTH_UUID, bytes([0x01, 0x02]))
+            if not self._running:
+                break
 
-                    # Read and publish initial state
-                    result = await self._read_status(client)
-                    if result:
-                        self._publish_state(*result)
-
-                    # Subscribe to STATUS notifications (real-time updates)
-                    def on_notify(sender, data):
-                        if len(data) >= 5:
-                            valve_open, remaining = parse_status(bytes(data))
-                            self._publish_state(valve_open, remaining)
-
-                    await client.start_notify(STATUS_UUID, on_notify)
-
-                    # Command + poll loop
-                    last_poll = asyncio.get_event_loop().time()
-                    while self._running and client.is_connected:
-                        try:
-                            cmd = await asyncio.wait_for(
-                                self._cmd_queue.get(), timeout=5.0
-                            )
-                            await self._send_command(client, cmd)
-                            last_poll = asyncio.get_event_loop().time()
-                        except asyncio.TimeoutError:
-                            pass
-
-                        if asyncio.get_event_loop().time() - last_poll >= poll:
-                            result = await self._read_status(client)
-                            if result:
-                                self._publish_state(*result)
-                            last_poll = asyncio.get_event_loop().time()
-
-            except (BleakError, BleakDeviceNotFoundError, OSError) as e:
-                log.warning("BLE connection lost: %s", e)
-            except Exception as e:
-                log.error("Unexpected BLE error: %s", e)
-
-            self._set_offline()
-            log.info("Disconnected — reconnecting in 10s")
-            await asyncio.sleep(10)
+            ok = await self._ble_connect_and_work()
+            if ok:
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= 3:
+                    self._set_offline()
+                    log.warning("3 consecutive BLE failures — marking offline")
 
     # ── Entry point ───────────────────────────────────────────────────────────
 
