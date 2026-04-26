@@ -1,0 +1,8 @@
+{
+  "mqtt_host": "YOUR_HA_IP",
+  "mqtt_port": 1883,
+  "mqtt_user": "",
+  "mqtt_password": "",
+  "poll_interval": 30,
+  "log_level": "INFO"
+}

@@ -1,0 +1,19 @@
+[Unit]
+Description=Galcon 11000BT MQTT Bridge
+After=network-online.target bluetooth.target
+Wants=network-online.target bluetooth.target
+
+[Service]
+Type=simple
+User=boaz
+WorkingDirectory=/home/boaz/galcon-bridge
+ExecStartPre=/usr/bin/rfkill unblock bluetooth
+ExecStartPre=/usr/bin/hciconfig hci0 up
+ExecStart=/usr/bin/python3 /home/boaz/galcon-bridge/galcon_bridge.py
+Restart=always
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
