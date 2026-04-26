@@ -107,6 +107,7 @@ class GalconBridge:
     def __init__(self, config: dict):
         self._cfg = config
         self._running = True
+        self._ble_available = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._cmd_queue: asyncio.Queue[str] = asyncio.Queue()
 
@@ -129,6 +130,9 @@ class GalconBridge:
                        json.dumps(DISCOVERY_VALVE), retain=True)
         client.publish("homeassistant/sensor/galcon_remaining/config",
                        json.dumps(DISCOVERY_SENSOR), retain=True)
+        # Overwrite any will-triggered "offline" if BLE was last seen healthy
+        if self._ble_available:
+            client.publish(TOPIC_AVAIL, "online", retain=True)
         client.subscribe(TOPIC_CMD)
         log.info("HA Discovery published, subscribed to %s", TOPIC_CMD)
 
@@ -149,9 +153,11 @@ class GalconBridge:
         self._mq.publish(TOPIC_STATE, state, retain=True)
         self._mq.publish(TOPIC_REMAIN, str(remaining_min), retain=True)
         self._mq.publish(TOPIC_AVAIL, "online", retain=True)
+        self._ble_available = True
         log.info("State: %s  remaining=%.1f min", state, remaining_min)
 
     def _set_offline(self):
+        self._ble_available = False
         self._mq.publish(TOPIC_AVAIL, "offline", retain=True)
 
     # ── BLE helpers ───────────────────────────────────────────────────────────
