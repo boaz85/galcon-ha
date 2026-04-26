@@ -17,7 +17,7 @@ import sys
 import warnings
 from pathlib import Path
 
-warnings.filterwarnings("ignore", category=DeprecationWarning, module="paho")
+warnings.filterwarnings("ignore", message=".*Callback API version.*", category=DeprecationWarning)
 
 from bleak import BleakScanner, BleakClient
 from bleak.exc import BleakError, BleakDeviceNotFoundError
