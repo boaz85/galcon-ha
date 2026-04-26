@@ -14,7 +14,10 @@ import json
 import logging
 import signal
 import sys
+import warnings
 from pathlib import Path
+
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="paho")
 
 from bleak import BleakScanner, BleakClient
 from bleak.exc import BleakError, BleakDeviceNotFoundError
@@ -111,7 +114,7 @@ class GalconBridge:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._cmd_queue: asyncio.Queue[str] = asyncio.Queue()
 
-        self._mq = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="galcon-bridge")
+        self._mq = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id="galcon-bridge")
         if config.get("mqtt_user"):
             self._mq.username_pw_set(config["mqtt_user"], config.get("mqtt_password", ""))
         self._mq.will_set(TOPIC_AVAIL, "offline", retain=True)
@@ -121,9 +124,9 @@ class GalconBridge:
 
     # ── MQTT callbacks ────────────────────────────────────────────────────────
 
-    def _on_mqtt_connect(self, client, userdata, flags, reason_code, properties):
-        if reason_code != 0:
-            log.error("MQTT connect failed, rc=%s", reason_code)
+    def _on_mqtt_connect(self, client, userdata, flags, rc):
+        if rc != 0:
+            log.error("MQTT connect failed, rc=%d", rc)
             return
         log.info("MQTT connected to %s:%d", self._cfg["mqtt_host"], self._cfg["mqtt_port"])
         client.publish("homeassistant/valve/galcon_irrigation/config",
@@ -136,8 +139,8 @@ class GalconBridge:
         client.subscribe(TOPIC_CMD)
         log.info("HA Discovery published, subscribed to %s", TOPIC_CMD)
 
-    def _on_mqtt_disconnect(self, client, userdata, flags, reason_code, properties):
-        log.warning("MQTT disconnected (rc=%s), will reconnect", reason_code)
+    def _on_mqtt_disconnect(self, client, userdata, rc):
+        log.warning("MQTT disconnected (rc=%d), will reconnect", rc)
 
     def _on_mqtt_message(self, client, userdata, msg):
         payload = msg.payload.decode().strip().upper()
@@ -295,7 +298,6 @@ class GalconBridge:
         try:
             await self._ble_loop()
         finally:
-            self._set_offline()
             self._mq.loop_stop()
             self._mq.disconnect()
             log.info("Bridge stopped")
