@@ -204,13 +204,17 @@ class GalconBridge:
 
     # ── Main BLE loop ─────────────────────────────────────────────────────────
 
-    async def _ble_connect_and_work(self):
-        """Connect once, handle any queued commands, read state, disconnect."""
+    async def _ble_connect_and_work(self) -> tuple[bool, int] | None:
+        """Connect once, handle any queued commands, read state, disconnect.
+
+        Returns (valve_open, remaining_secs) on success, None on failure.
+        """
         device = await self._find_galcon()
         if not device:
-            return False
+            return None
 
         got_state = False
+        state = None
         try:
             async with BleakClient(device, timeout=30.0) as client:
                 log.info("Connected to Galcon")
@@ -222,32 +226,48 @@ class GalconBridge:
                     await self._send_command(client, cmd)
 
                 # Read and publish current state
-                result = await self._read_status(client)
-                if result:
-                    self._publish_state(*result)
+                state = await self._read_status(client)
+                if state:
+                    self._publish_state(*state)
                     got_state = True
 
         except (BleakError, BleakDeviceNotFoundError, OSError) as e:
             if not got_state:
                 log.warning("BLE error: %s", e)
-                return False
+                return None
             log.debug("BLE disconnect error (state already read): %s", e)
         except Exception as e:
             if not got_state:
                 log.error("Unexpected BLE error: %s", e)
-                return False
+                return None
             log.debug("BLE disconnect error (state already read): %s", e)
 
         log.info("Disconnected from Galcon")
-        return True
+        return state
+
+    async def _sleep_interruptible(self, seconds: float):
+        """Sleep for up to `seconds`, waking early if a command arrives."""
+        elapsed = 0.0
+        while self._running and elapsed < seconds:
+            try:
+                cmd = await asyncio.wait_for(
+                    self._cmd_queue.get(), timeout=min(5.0, seconds - elapsed)
+                )
+                self._cmd_queue.put_nowait(cmd)
+                return
+            except asyncio.TimeoutError:
+                elapsed += 5.0
 
     async def _ble_loop(self):
-        poll = self._cfg.get("poll_interval", 120)
+        idle_poll   = self._cfg.get("poll_interval", 300)
+        active_poll = self._cfg.get("active_poll_interval", 60)
         consecutive_failures = 0
+        valve_open = False
 
         # Initial connect on startup
-        ok = await self._ble_connect_and_work()
-        if ok:
+        state = await self._ble_connect_and_work()
+        if state is not None:
+            valve_open, _ = state
             consecutive_failures = 0
         else:
             consecutive_failures += 1
@@ -255,22 +275,16 @@ class GalconBridge:
                 self._set_offline()
 
         while self._running:
-            # Sleep until poll interval, checking every 5s so shutdown is responsive
-            elapsed = 0
-            cmd = None
-            while self._running and elapsed < poll:
-                try:
-                    cmd = await asyncio.wait_for(self._cmd_queue.get(), timeout=min(5.0, poll - elapsed))
-                    self._cmd_queue.put_nowait(cmd)
-                    break
-                except asyncio.TimeoutError:
-                    elapsed += 5
+            poll = active_poll if valve_open else idle_poll
+            log.debug("Next poll in %ds (valve %s)", poll, "open" if valve_open else "closed")
+            await self._sleep_interruptible(poll)
 
             if not self._running:
                 break
 
-            ok = await self._ble_connect_and_work()
-            if ok:
+            state = await self._ble_connect_and_work()
+            if state is not None:
+                valve_open, _ = state
                 consecutive_failures = 0
             else:
                 consecutive_failures += 1

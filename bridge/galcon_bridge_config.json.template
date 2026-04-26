@@ -3,6 +3,7 @@
   "mqtt_port": 1883,
   "mqtt_user": "",
   "mqtt_password": "",
-  "poll_interval": 120,
+  "poll_interval": 300,
+  "active_poll_interval": 60,
   "log_level": "INFO"
 }
