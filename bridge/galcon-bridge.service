@@ -12,6 +12,7 @@ ExecStartPre=+/usr/bin/hciconfig hci0 up
 ExecStart=/usr/bin/python3 /home/boaz/galcon-bridge/galcon_bridge.py
 Restart=always
 RestartSec=15
+TimeoutStopSec=15
 StandardOutput=journal
 StandardError=journal
 

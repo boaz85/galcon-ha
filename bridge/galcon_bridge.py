@@ -246,12 +246,16 @@ class GalconBridge:
                 self._set_offline()
 
         while self._running:
-            # Sleep until poll interval, but wake early if a command arrives
-            try:
-                cmd = await asyncio.wait_for(self._cmd_queue.get(), timeout=poll)
-                self._cmd_queue.put_nowait(cmd)  # put it back so _ble_connect_and_work drains it
-            except asyncio.TimeoutError:
-                pass  # regular poll
+            # Sleep until poll interval, checking every 5s so shutdown is responsive
+            elapsed = 0
+            cmd = None
+            while self._running and elapsed < poll:
+                try:
+                    cmd = await asyncio.wait_for(self._cmd_queue.get(), timeout=min(5.0, poll - elapsed))
+                    self._cmd_queue.put_nowait(cmd)
+                    break
+                except asyncio.TimeoutError:
+                    elapsed += 5
 
             if not self._running:
                 break
